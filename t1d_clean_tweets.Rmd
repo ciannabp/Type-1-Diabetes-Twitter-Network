@@ -1,0 +1,78 @@
+---
+title: "t1d_clean_tweets"
+author: "Cianna Bedford-Petersen"
+date: "last knitted:`r Sys.time()`"
+output: 
+  html_document:
+      df_print: paged
+      toc_float: true 
+      code_folding: hide
+---
+
+```{r setup, include=FALSE}
+
+library(rio)
+library(tidyverse)
+library(tidytext)
+library(here)
+
+knitr::opts_chunk$set(cache = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Import Tweets
+```{r import tweets}
+
+firsttweets <- import(here("data_2020-01-03/firsttweets.Rdata"))
+
+unique_users <- unique(firsttweets$user_id)
+
+alltweets <-  import(here("data_2020-01-03/alltweets.Rdata"))
+
+# distinct user_id and tweet combos
+distinct_select_tweets <- alltweets %>% 
+  distinct(user_id, text, .keep_all = T)
+
+```
+
+
+# Clean Tweets 
+
+```{r cleaning}
+
+data(stop_words)
+replace_reg <- "https://t.co/[A-Za-z\\d]+|http://[A-Za-z\\d]+|&amp;|&lt;|&gt;|RT|https"
+unnest_reg <- "([^A-Za-z_\\d#@']|'(?![A-Za-z_\\d#@]))"
+
+# remove urls and other unusable data
+t1d_tidy_tweets <- distinct_select_tweets %>%
+  mutate(text = str_replace_all(text, replace_reg, ""),
+         reply_to_screen_name = ifelse(is.na(reply_to_screen_name), "", reply_to_screen_name), 
+   tweet_type = ifelse(reply_to_screen_name != "", "reply",
+                        ifelse(is_retweet == TRUE, "retweet", "tweet"))) %>%
+  unnest_tokens(word, text, token = "regex", pattern = unnest_reg) %>%
+  filter(!word %in% stop_words$word, str_detect(word, "[a-z]"))
+
+# save cleaned unnested tweets
+folder = "data_2020-01-03"
+save(t1d_tidy_tweets, file = here(paste0(folder, "/t1d_tidy_tweets.Rdata")))
+
+
+# check count of tweet type categories
+t1d_tidy_tweets %>% 
+  select(status_id, tweet_type) %>% 
+  unique() %>% 
+  group_by(tweet_type) %>% 
+  summarise(n=n())
+```
+
+```{r language breakdown}
+
+#count of language categories for first tweets
+
+firsttweets %>% 
+  select(status_id, lang) %>% 
+  group_by(lang) %>% 
+  summarise(n=n()) %>% 
+  arrange(desc(n))
+```
+

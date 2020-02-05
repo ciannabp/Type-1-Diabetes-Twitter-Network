@@ -1,0 +1,136 @@
+---
+title: "t1d_social_network_analysis"
+author: "Cianna Bedford-Petersen"
+date: "last knitted:`r Sys.time()`"
+output: 
+  html_document:
+      df_print: paged
+      toc_float: true 
+      code_folding: hide
+---
+
+```{r setup, include=FALSE}
+
+library(tidyverse)
+library(tidytext)
+library(rtweet)
+library(rio)
+library(future)
+library(tictoc)
+library(furrr)
+library(reshape2)
+library(RColorBrewer)
+library(wordcloud)
+library(igraph)
+library(tidygraph)
+library(ggraph)
+library(netrankr)
+library(glue)
+library(RColorBrewer)
+
+
+knitr::opts_chunk$set(cache = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Twitter Authentication
+
+# Import cleaned and unnested tweets 
+
+```{r}
+
+firsttweets <- import(here("data_2020-01-02/firsttweets.Rdata"))
+
+alltweets <-  import(here("data_2020-01-02/alltweets.Rdata"))
+
+
+#pull list of user_ids, 300 users 
+first_users <- firsttweets %>% 
+  distinct(user_id) %>% 
+  pull(user_id)
+
+#quick fix for followers
+followertweets <- all_tweets %>% 
+  slice(-1:-29220) %>% 
+  distinct(user_id) %>% 
+  pull(user_id)
+  
+
+# make df of all unique users
+all_users <- all_tweets %>% 
+  pull(user_id) %>% 
+  unique()
+length(all_users)
+
+# user info for all tweets
+user_details <- lookup_users(all_users)
+
+```
+
+
+# Graph network for followers of top active users
+```{r graph followers}
+ 
+# make edge list
+make_df_from_followers <- function(followertweets, user_id) {
+  if (!is.null(followertweets)) {
+    tibble(from_id = followertweets[[1]],
+           to_id = user_id)
+  }
+}
+
+# Column `from_id` can't be converted from character to logical
+edges_tmp <- map2(followertweets, first_users, make_df_from_followers) %>% 
+  bind_rows() %>%
+  left_join(user_details, by = c("to_id" = 'user_id')) %>% 
+  select(from_id, user_id) %>% 
+  rename(to_id = user_id)
+edges_tmp
+
+# make node list
+nodes_df <- tibble(user_id = unique(c(edges_tmp$from_id, edges_tmp$to_id))) %>%
+  mutate(ID = row_number()) %>%
+  left_join(user_details, by = c("user_id")) %>%
+  select(ID, user_id, screen_name, followers_count, favourites_count)
+
+# color user by dominant topic
+users_topics <- t1d_documents10 %>% 
+  rename(user_id = document) %>% 
+  group_by(user_id) %>% 
+  filter(gamma == max(gamma))
+
+nodes_df  <-  full_join(nodes_df, users_topics, by = "user_id")
+nodes_df <-  select(nodes_df, -ID)
+
+pal <- brewer.pal(7, "Set1")
+nodes_df$color = ifelse(nodes_df$topic == 1, pal[1],
+                          ifelse(nodes_df$topic == 2, pal[2],
+                                 ifelse(nodes_df$topic == 3, pal[3],
+                                        ifelse(nodes_df$topic == 4, pal[4], 
+                                               ifelse(nodes_df$topic == 5,pal[5],
+                                                      ifelse(is.na(nodes_df$topic),pal[6], pal[7]))))))
+
+# make final edge table
+edge_table <- edges_tmp %>%
+  left_join(nodes_df, by = c('from_id' = 'user_id')) %>%
+  left_join(nodes_df, by = c('to_id' = 'user_id'))
+
+graph <- graph_from_data_frame(edge_table, directed = TRUE)
+layout <- layout_with_fr(graph)
+
+# graph
+graph2 <- graph_from_data_frame(edge_table, directed = TRUE, vertices = nodes_df)
+
+pdf("twitter_net_topics.pdf", width = 70, height = 80)
+plot(graph2,
+     layout = layout,
+     vertex.color = scales::alpha(V(graph2)$color, alpha = 0.4), 
+     vertex.frame.color = scales::alpha(V(graph2)$color, alpha = 0.4),
+     vertex.size = 1,
+     vertex.label=NA,
+     edge.color = scales::alpha("grey", alpha = 0.4),
+     edge.arrow.size = 1)
+legend("topright", legend = c("Topic 1", "Topic 2", "Topic 3", "Topic 4", "Topic 5", "Topic 6"), 
+       pch = 19,col = pal, pt.cex = 10, cex = 8, bty = "n", ncol = 1, title = "Node color") 
+dev.off()
+```
+
