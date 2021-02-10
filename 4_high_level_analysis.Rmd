@@ -1,0 +1,249 @@
+---
+title: "t1d_high_level_analysis"
+author: "Cianna Bedford-Petersen"
+date: "last knitted:`r Sys.time()`"
+output: 
+  html_document:
+      df_print: paged
+      toc_float: true 
+      code_folding: show
+---
+
+```{r setup, include=FALSE}
+
+library(tidyverse)
+library(rio)
+library(here)
+library(rtweet)
+
+knitr::opts_chunk$set(cache = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Import cleaned and unnested tweets 
+
+```{r}
+
+t1d_tidy_tweets <- import(here("data_2020-01-03/t1d_tidy_tweets.Rdata"))
+
+firsttweets <- import(here("data_2020-01-03/firsttweets.Rdata"))
+
+firsttweets <- firsttweets %>% 
+  filter(lang == "en")
+
+
+alltweets <- import(here("data_2020-01-03/alltweets.Rdata"))
+```
+
+# Popular Words
+
+```{r popular words}
+
+popular_words <- t1d_tidy_tweets %>% 
+  filter(word != "#t1d", word !="#t1dlookslikeme", word !="#brokenpancreas", word !="#type1kid", word 
+         !="#typeonetypenone", word !="#diabadass",word !="#type1warrior", word !="#beyondtype1", word 
+         !="#insulindependent", word !="#typeonestrong", word !="#dexcom",word !="#GBdoc") %>%
+  group_by(word) %>% 
+  tally(sort=TRUE) %>% 
+  slice(1:25) %>% 
+  ggplot(aes(x = reorder(word, n, function(n) -n), y = n)) + 
+    geom_bar(stat = "identity", fill="#b04d31") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 60,hjust = 1, size = 14)) + 
+    labs(title="Popular Words for the T1D Communitiy on Twitter",
+         y="count", 
+         x="")
+popular_words
+    
+```
+
+# Read in NRC Sentiment and Emotion Dictionary 
+
+```{r read in dictionaries}
+
+nrc_sentiment <-import(here("NRC_lexicons/AutomaticallyGeneratedLexicons/NRC-Hashtag-Sentiment-Lexicon-v1.0/HS-unigrams.txt"), setclass = "tbl_df") %>% 
+  rename(word = V1,
+         score = V2,
+         n_pos = V3,
+         n_neg = V4)
+
+nrc_emotion <- import(here("NRC_lexicons/AutomaticallyGeneratedLexicons/NRC-Hashtag-Emotion-Lexicon-v0.2/NRC-Hashtag-Emotion-Lexicon-v0.2.txt"), setclass = "tbl_df") %>% 
+  rename(emotion = V1,
+         word = V2, 
+         score = V3)
+```
+
+# Sentiment analysis 
+
+```{r sentiment analysis}
+
+users_sentiment <- t1d_tidy_tweets %>% 
+  # inner_join since we only need
+  # words that appear in tweets and
+  # the sentiment dictionary
+  inner_join(nrc_sentiment) %>% 
+  # rename the variable score, which
+  # contains the sentiment scores,
+  # to sentiment
+  group_by(user_id) %>% 
+  summarize(m_sentiment = mean(score, na.rm = TRUE)) %>% 
+  select(user_id, m_sentiment)
+
+mean(users_sentiment$m_sentiment)
+
+# density plot of sentiment
+users_sentiment %>%
+  ggplot(aes(x = m_sentiment)) +
+    geom_density(color = "#377F97", fill = "#377F97", alpha = 0.8) +
+    theme_minimal() +
+    labs(title = "Sentiment analysis of Diabetes tweets",
+         x = "sentiment") +
+    xlim(-1,1)
+
+# most common positive and negative words
+common_sentiment <- t1d_tidy_tweets %>%
+  # inner_join since we only need
+  # words that appear in tweets and
+  # the sentiment dictionary
+  inner_join(nrc_sentiment) %>%
+  # rename the variable score, which
+  # contains the sentiment scores,
+  # to sentiment
+  mutate(sentiment = ifelse(score >=0, "positive", ifelse(score <=0, "negative", "neutral"))) %>%
+  count(word, sentiment, sort=TRUE) %>%
+  ungroup()
+
+common_sentiment%>%
+  group_by(sentiment) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(y = "Contribution to sentiment",
+       x = NULL) +
+  coord_flip()
+```
+
+# Emotion Analysis
+
+```{r emotion analysis}
+
+#emotion categories
+nrc_emotion %>%
+    group_by(emotion) %>%
+    summarise(count=n())
+
+users_emotions <- t1d_tidy_tweets %>% 
+  # inner_join because we 
+  # again just want emotion words
+  inner_join(nrc_emotion) %>% 
+  group_by(user_id, emotion) %>% 
+  summarize(m = mean(score, na.rm = TRUE)) %>% 
+  gather(variable, score, -user_id, -emotion) %>% 
+  unite(col, variable, emotion) %>% 
+  spread(col, score)
+
+
+```
+
+```{r descriptive tweet features}
+
+emo_descripts <- t1d_tidy_tweets %>% 
+  # inner_join because we 
+  # again just want
+  inner_join(nrc_emotion) %>% 
+  group_by(emotion) %>% 
+  summarize(m = mean(score),
+            sd = sd(score),
+            min = min(score),
+            max = max(score)) %>% 
+  rename(Feature = emotion) %>% 
+  select(Feature, m, sd, min, max)
+
+sent_descripts <- t1d_tidy_tweets %>% 
+  # inner_join since we only need
+  # words that appear in tweets and
+  # the sentiment dictionary
+  inner_join(nrc_sentiment) %>% 
+  summarize(m_sentiment = mean(score, na.rm = TRUE),
+            sd_sentiment = sd(score, na.rm = TRUE),
+            min_sentiment = min(score, na.rm = TRUE),
+            max_sentiment = max(score, na.rm = TRUE)) %>% 
+  gather(col, value) %>% 
+  separate(col, c("stat", "Feature")) %>% 
+  spread(stat, value) %>% 
+  select(Feature, m, sd, min, max)
+
+
+descripts <- rbind(sent_descripts,emo_descripts) 
+knitr::kable(descripts, digits = 2)
+
+```
+
+
+```{r time series}
+## plot time series of first timeline tweets
+firsttweets$datetime <- paste(firsttweets$Date, firsttweets$Time)
+
+firsttweets$datetime <- as.POSIXct(firsttweets$datetime)
+
+firsttweets %>%
+  select(status_id, datetime) %>%   
+  ts_plot("1 weeks") +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(plot.title = ggplot2::element_text(face = "bold")) +
+  ggplot2::labs(
+    x = NULL, y = NULL,
+    title = "Frequency of Tweets from Initial Data Pull",
+    subtitle = "Tweet counts aggregated using 1 week intervals"
+  )
+
+## plot time series of first timeline tweets in the past year
+firsttweets_recent <- firsttweets %>%
+  filter(grepl('2020|2019', Date))
+  
+firsttweets_recent %>% 
+  select(status_id, datetime) %>%   
+  ts_plot("1 days") +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(plot.title = ggplot2::element_text(face = "bold")) +
+  ggplot2::labs(
+    x = NULL, y = NULL,
+    title = "Frequency of Tweets from Initial Data Pull Since 2019",
+    subtitle = "Tweet counts aggregated using 1 day intervals"
+  )
+
+## plot time series of all tweets
+alltweets$datetime <- paste(alltweets$Date, alltweets$Time)
+
+alltweets$datetime <- as.POSIXct(alltweets$datetime)
+
+alltweets %>%
+  select(status_id, datetime) %>% 
+  ts_plot("1 weeks") +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(plot.title = ggplot2::element_text(face = "bold")) +
+  ggplot2::labs(
+    x = NULL, y = NULL,
+    title = "Frequency of Tweets from Full Data Pull",
+    subtitle = "Tweet counts aggregated using 1 week intervals"
+  )
+
+## plot time series of all tweets in the past year
+alltweets_recent <- alltweets %>%
+  filter(grepl('2020|2019|2018', Date))
+  
+alltweets_recent %>% 
+  select(status_id, datetime) %>%   
+  ts_plot("1 days") +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(plot.title = ggplot2::element_text(face = "bold")) +
+  ggplot2::labs(
+    x = NULL, y = NULL,
+    title = "Frequency of Tweets from Full Data Pull Since 2019",
+    subtitle = "Tweet counts aggregated using 1 day intervals"
+  )
+
+```
+
