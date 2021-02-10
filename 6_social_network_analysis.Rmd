@@ -1,0 +1,168 @@
+---
+title: "t1d_social_network_analysis"
+author: "Cianna Bedford-Petersen"
+date: "last knitted:`r Sys.time()`"
+output: 
+  html_document:
+      df_print: paged
+      toc_float: true 
+      code_folding: hide
+---
+
+```{r setup, include=FALSE}
+
+library(tidyverse)
+library(tidytext)
+library(rtweet)
+library(rio)
+library(future)
+library(tictoc)
+library(furrr)
+library(reshape2)
+library(RColorBrewer)
+library(wordcloud)
+library(igraph)
+library(tidygraph)
+library(ggraph)
+library(netrankr)
+library(glue)
+library(RColorBrewer)
+library(here)
+
+knitr::opts_chunk$set(cache = TRUE, warning = FALSE, message = FALSE)
+
+#date = Sys.Date()
+#OR THIS
+date = "2020-01-03"
+folder = paste0("data_", as.character(date))
+```
+
+
+```{r}
+
+#pull in all tweets
+alltweets <- import(here(paste0(folder,"/alltweets.Rdata")))
+
+#identify high influence accounts by most followers
+influencers <- alltweets %>% 
+  group_by(screen_name) %>% 
+  filter(row_number() == 1) %>% 
+  arrange(desc(followers_count)) %>% 
+  filter(screen_name != "AADEdiabetes") %>% #remove participant who deleted account
+  ungroup() %>% 
+  top_n(100)
+
+#pull user ids 
+influencer_users <- influencers %>% 
+  pull(screen_name) %>% 
+  unique()
+#pull user details
+user_details <- lookup_users(influencer_users)
+```
+
+```{r, eval = F}
+#pull followers for our top 100 influencers
+getAllFollowers <- function (name) { 
+  user_info <- lookup_users(name) 
+  user_follower <- get_followers(name, n=user_info$followers_count, retryonratelimit = T)
+  Sys.sleep(2) #sleep for 2 seconds
+  return(user_follower) }
+
+followers <- lapply(X = influencer_users, FUN = getAllFollowers)
+
+save(followers, file = here(paste0(folder, "/influencer_followers.Rdata")))
+```
+
+ Clean file
+```{r clean}
+load(file = here(paste0(folder, "/influencer_followers.Rdata")))
+influencer_ids = influencers$user_id
+
+names(followers) = influencers$screen_name
+
+influencers_only = function(x){
+  filter(x, user_id %in% influencer_ids)
+}
+
+followers = lapply(followers, influencers_only)
+```
+
+# Graph network for followers of top active users
+```{r graph followers}
+ 
+# make edge list
+make_df_from_followers <- function(followers, screen_name) {
+  if (!is.null(followers)) {
+    tibble(from_id = followers[[1]],
+           to_name = screen_name)
+  }
+}
+  
+  
+edges_tmp <- map2(followers, influencer_users, make_df_from_followers) %>% 
+  bind_rows() %>%
+  left_join(user_details, by = c("to_name" = 'screen_name')) %>% 
+  select(from_id, user_id) %>%     
+  rename(to_id = user_id)
+#edges_tmp
+
+# make node list
+nodes_df <- tibble(user_id = unique(c(edges_tmp$from_id, edges_tmp$to_id))) %>%
+  mutate(ID = row_number()) %>%
+  left_join(user_details, by = c("user_id")) %>%
+  select(ID, user_id, screen_name, followers_count, favourites_count)
+
+load(here(paste0(folder,"/lda_user.Rdata")))
+
+# color user by dominant topic
+users_topics <- t1d_documents6 %>% 
+  rename(user_id = document) %>% 
+  group_by(user_id) %>% 
+  filter(gamma == max(gamma))
+
+nodes_df  <-  full_join(nodes_df, users_topics, by = "user_id")
+nodes_df <-  select(nodes_df, -ID)
+
+pal <- brewer.pal(6, "Dark2")
+nodes_df$color = ifelse(nodes_df$topic == 1, pal[1],
+                          ifelse(nodes_df$topic == 2, pal[2],
+                                 ifelse(nodes_df$topic == 3, pal[3],
+                                        ifelse(nodes_df$topic == 4, pal[4], 
+                                          ifelse(nodes_df$topic == 5, pal[5],
+                                          ifelse(nodes_df$topic == 6, pal[6], pal[7]))))))
+
+# make final edge table
+edge_table <- edges_tmp %>%
+  left_join(nodes_df, by = c('from_id' = 'user_id')) %>%
+  left_join(nodes_df, by = c('to_id' = 'user_id'))
+
+graph <- graph_from_data_frame(edge_table, directed = TRUE)
+layout <- layout_with_fr(graph)
+
+# graph
+graph2 <- graph_from_data_frame(edge_table, directed = TRUE, vertices = nodes_df)
+
+pdf(here("graphics/twitter_net_topics.pdf"), width = 70, height = 80)
+plot(graph2,
+     layout = layout,
+     vertex.color = scales::alpha(V(graph2)$color, alpha = 0.8), 
+     vertex.frame.color = scales::alpha(V(graph2)$color, alpha = 0.8),
+     vertex.size = 2,
+     vertex.label=NA,
+     edge.color = scales::alpha("grey", alpha = 1),
+     edge.arrow.size = 2)
+legend("topright", legend = c("Topic 1", "Topic 2", "Topic 3", "Topic 4", "Topic 5", "Topic 6"), 
+       pch = 19,col = pal, pt.cex = 10, cex = 8, bty = "n", ncol = 1, title = "Node color") 
+dev.off()
+```
+
+```{r}
+#look at breakdown of dominant topics
+nodes_unique <- subset(nodes_df, (screen_name %in% influencers$screen_name))
+
+nodes_unique %>% 
+  count(topic)
+```
+
+
+
