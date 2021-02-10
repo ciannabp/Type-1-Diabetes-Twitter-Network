@@ -1,0 +1,188 @@
+---
+title: "t1d_lda_analysis"
+author: "Cianna Bedford-Petersen"
+date: "last knitted:`r Sys.time()`"
+output: 
+  html_document:
+      df_print: paged
+      toc_float: true 
+      code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+
+library(tidyverse)
+library(rio)
+library(here)
+library(topicmodels)
+library(ldatuning)
+library(future)
+library(tictoc)
+library(furrr)
+library(reshape2)
+library(RColorBrewer)
+library(wordcloud)
+library(tidytext)
+
+
+
+knitr::opts_chunk$set(cache = TRUE, warning = FALSE, message = FALSE)
+date = Sys.Date()
+#OR THIS
+date = "2020-01-03"
+folder = paste0("data_", as.character(date))
+```
+
+# Import cleaned and unnested tweets 
+
+```{r}
+
+t1d_tidy_tweets <- import(here("data_2020-01-03/t1d_tidy_tweets.Rdata")) %>% 
+  filter(word != "#t1d", word !="#t1dlookslikeme", word !="#brokenpancreas", word !="#type1kid", word 
+         !="#typeonetypenone", word !="#diabadass",word !="#type1warrior", word !="#beyondtype1", word 
+         !="#insulindependent", word !="#typeonestrong", word !="#dexcom",word !="#gbdoc")
+
+```
+
+# Make document term matrix
+```{r lda}
+
+# count how many times a user used each word
+data(stop_words)
+
+word_counts_user <- t1d_tidy_tweets %>%
+  anti_join(stop_words) %>%
+  count(user_id, word, sort = TRUE) %>%
+  ungroup()
+
+# make dataframe into a document term matrix, with users as documents
+user_dtm <- word_counts_user %>%
+  cast_dtm(user_id, word, n)
+user_dtm
+```
+
+# Perplexity
+```{r}
+# determine perplexity 
+n_topics <- c(2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30)
+
+# cache the models and only estimate if they don't already exist
+if (file.exists(here("t1d_tweets_compare.Rdata"))) {
+  load(file = here("t1d_tweets_compare.Rdata"))
+} else {
+  plan(multiprocess)
+
+  tic()
+ t1d_tweets_compare <- n_topics %>%
+    future_map(LDA, x = user_dtm, control = list(seed = 102219))
+  toc()
+  save(user_dtm, t1d_tweets_compare, file = here("t1d_tweets_compare.Rdata"))
+}
+
+# plot perplexity for each model
+plot <- tibble(k = n_topics,
+       perplex = map_dbl(t1d_tweets_compare, perplexity)) %>%
+  ggplot(aes(k, perplex)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "Evaluating LDA topic models",
+       subtitle = "Optimal number of topics (smaller is better)",
+       x = "Number of topics",
+       y = "Perplexity")
+plot
+```
+
+# Run the Final LDA models
+```{r 6}
+
+#make the final model
+t1d_lda6 <- LDA(user_dtm, k = 6, control = list(seed = 51320))
+t1d_lda6
+
+#extract the per-topic-per-word probabilities
+t1d_topics6 <- tidy(t1d_lda6, matrix = "beta")
+t1d_topics6
+
+#pull top terms and visualize
+t1d_top_terms6 <- t1d_topics6 %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+t1d_top_terms6 %>%
+  mutate(term = reorder(term, beta)) %>%
+  ggplot(aes(term, beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip()
+
+#wordcloud for most characteristic word in each topic
+topics_beta <- tidy(t1d_lda6, matrix = "beta")
+
+topics_beta %>%
+  group_by(term) %>%
+  top_n(1, beta) %>%
+  group_by(topic) %>%
+  top_n(50, beta) %>%
+  acast(term ~ topic, value.var = "beta", fill = 0) %>%
+  comparison.cloud(colors = brewer.pal(6, "Dark2"), max.words= 100, scale=c(3,0.2), 
+           random.order = FALSE)
+
+# words that have the greatest difference in beta weight between topics, can use when we are trying to determine the difference between two specific topics
+beta_spread6.1.2 <- t1d_topics6 %>%
+  mutate(topic = paste0("topic", topic)) %>%
+  spread(topic, beta) %>%
+  filter(topic1 > .001 | topic2 > .001) %>%
+  mutate(log_ratio = log2(topic1 / topic2))
+
+beta_spread6.1.2
+
+#visualize this
+beta_spread6.1.2 %>%
+  mutate(abs_log_ratio = abs(log_ratio)) %>%
+  arrange(desc(abs_log_ratio)) %>%
+  filter(row_number() < 21) %>%
+  arrange(desc(log_ratio)) %>%
+  ggplot(aes(reorder(term,log_ratio), log_ratio)) +
+  geom_col(fill = "#377F97", show.legend = FALSE) +
+  coord_flip()
+
+#per-document-per-topic probabilities, gamma
+t1d_documents6 <- tidy(t1d_lda6, matrix = "gamma")
+t1d_documents6
+
+#check a tweet that is heavily in one topic
+tidy(user_dtm) %>%
+  filter(document == 	26428119) %>%
+  arrange(desc(count)) 
+
+
+#top tweets by topic
+topic1_LDA6 <- t1d_documents6 %>% 
+  filter(topic == 1 ) %>% 
+  arrange(desc(gamma)) %>%
+  #top_n(50, gamma) %>% 
+  filter(row_number() <= 50) %>%
+  left_join(alltweets, by= c("document" = "status_id"))
+
+topic2_LDA6 <- t1d_documents6 %>% 
+  filter(topic == 2 ) %>% 
+  arrange(desc(gamma)) %>%
+  #top_n(50, gamma) %>% 
+  filter(row_number() <= 50) %>%
+  left_join(alltweets, by= c("document" = "status_id"))
+
+topic3_LDA6 <- t1d_documents6 %>% 
+  filter(topic == 3 ) %>% 
+  top_n(50, gamma) %>% 
+  left_join(alltweets, by= c("document" = "status_id"))
+```
+
+# Save final topics data
+```{r}
+save(t1d_documents6, file = here(paste0(folder,"/lda_user.Rdata")))
+```
+
