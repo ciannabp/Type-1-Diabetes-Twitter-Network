@@ -1,0 +1,59 @@
+---
+title: "t1d_merging"
+author: "Cianna Bedford-Petersen"
+date: "last knitted:`r Sys.time()`"
+output: 
+  html_document:
+      df_print: paged
+      toc_float: true 
+      code_folding: show
+---
+
+```{r setup, include=FALSE}
+
+library(here)
+library(tidyverse)
+library(rtweet)
+
+
+knitr::opts_chunk$set(cache = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Merge files
+```{r merge}
+
+#select date of data download -- useful if you want to use different versions
+date = "2020-01-03"
+# followerfiles
+files = list.files(here(paste0("data_", date)))
+files = files[grepl("followertweets", files)]
+
+# load dataset scraped using first pass with hashtags
+load(here(paste0("data_", date,"/firsttweets.Rdata")))
+
+all_tweets = firsttweets %>%
+  select(user_id, screen_name, status_id, text, is_retweet, reply_to_screen_name, Date, Time, Zone, country, lang, followers_count)
+
+# load other datasets and merge with firsttweets
+for(i in files){
+  load(here(paste0("data_", date,"/", i)))
+  followertweets = followertweets %>%
+    select(user_id, screen_name, status_id, text, is_retweet, reply_to_screen_name, Date, Time, Zone, country, lang, followers_count)
+  all_tweets = full_join(all_tweets, followertweets)
+}
+
+#filter for english tweets
+all_tweets <- all_tweets %>% 
+  filter(lang == "en")
+
+save(all_tweets, file = here(paste0("data_", date,"/alltweets.Rdata")))
+
+final_nrow = nrow(all_tweets)
+final_ntweets = length(unique(all_tweets$text))
+final_nusers = length(unique(all_tweets$user_id))
+  
+save(final_nrow, final_ntweets, final_nusers,
+     file = here(paste0("data_", date, "/final_info.Rdata")))
+
+```
+
